@@ -9,7 +9,7 @@
 #include "../include/init.h"
 
 int main(int argc, char **argv) {
-    printf("Starting SimOS Controller...\n");
+    printf("Starting SimOS Controller.. \n");
 
     // Step 1: Parse CLI arguments
     CliArgs args = parse_cli_args(argc, argv);
