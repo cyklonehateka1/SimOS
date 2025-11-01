@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        ".fantomasignore": "ignore",
+        "logging.h": "c",
+        "fcntl.h": "c",
+        "array": "c",
+        "string": "c",
+        "string_view": "c",
+        "vector": "c",
+        "cli.h": "c",
+        "stdbool.h": "c"
+    }
+}

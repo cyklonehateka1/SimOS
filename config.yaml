@@ -1,0 +1,3 @@
+db_path: "data/simos.db"
+log_path: "simos.log"
+listen_port: 8080
