@@ -1,3 +1,10 @@
-db_path: "data/simos.db"
-log_path: "simos.log"
-listen_port: 8080
+db_path: "./data/simos.db"
+log_path: "./logs/simos.log"
+listen_port: 9000
+nodes:
+  - name: "node1"
+    address: "192.168.1.10"
+    os: "linux"
+  - name: "node2"
+    address: "192.168.1.11"
+    os: "windows"
