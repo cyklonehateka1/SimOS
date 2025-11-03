@@ -8,6 +8,9 @@
         "string_view": "c",
         "vector": "c",
         "cli.h": "c",
-        "stdbool.h": "c"
+        "stdbool.h": "c",
+        "in.h": "c",
+        "socket.h": "c",
+        "loop.h": "c"
     }
 }

@@ -20,9 +20,19 @@ Config* config_load(const char *path) {
         fclose(fh);
         return NULL;
     }
+
     yaml_parser_set_input_file(&parser, fh);
 
     Config *cfg = calloc(1, sizeof(Config));
+    if (!cfg) {
+        fprintf(stderr, "Memory allocation failed for Config\n");
+        yaml_parser_delete(&parser);
+        fclose(fh);
+        return NULL;
+    }
+
+    memset(cfg, 0, sizeof(Config));
+
     char key[256] = {0};
     int node_index = -1;
     bool in_nodes_seq = false;
@@ -32,6 +42,7 @@ Config* config_load(const char *path) {
             fprintf(stderr, "YAML parsing error\n");
             yaml_parser_delete(&parser);
             fclose(fh);
+            if (cfg->nodes) free(cfg->nodes);
             free(cfg);
             return NULL;
         }
@@ -40,25 +51,36 @@ Config* config_load(const char *path) {
             case YAML_SCALAR_EVENT:
                 if (!key[0]) {
                     // First scalar = key
-                    strcpy(key, (char *)event.data.scalar.value);
+                    strncpy(key, (char *)event.data.scalar.value, sizeof(key) - 1);
                 } else {
                     // Second scalar = value
                     if (!in_nodes_seq) {
                         if (strcmp(key, "db_path") == 0)
-                            strcpy(cfg->db_path, (char *)event.data.scalar.value);
+                            strncpy(cfg->db_path, (char *)event.data.scalar.value, sizeof(cfg->db_path) - 1);
                         else if (strcmp(key, "log_path") == 0)
-                            strcpy(cfg->log_path, (char *)event.data.scalar.value);
+                            strncpy(cfg->log_path, (char *)event.data.scalar.value, sizeof(cfg->log_path) - 1);
                         else if (strcmp(key, "listen_port") == 0)
                             cfg->listen_port = atoi((char *)event.data.scalar.value);
                     } else {
                         // Inside a node object
+                        if (node_index < 0) {
+                            node_index = 0; // ensure valid index if missing mapping start
+                            cfg->node_count = 1;
+                        }
+
+                        if (node_index >= MAX_NODES) {
+                            fprintf(stderr, "Error: too many nodes defined (max %d)\n", MAX_NODES);
+                            break;
+                        }
+
                         if (strcmp(key, "name") == 0)
-                            strcpy(cfg->nodes[node_index].name, (char *)event.data.scalar.value);
+                            strncpy(cfg->nodes[node_index].name, (char *)event.data.scalar.value, sizeof(cfg->nodes[node_index].name) - 1);
                         else if (strcmp(key, "address") == 0)
-                            strcpy(cfg->nodes[node_index].address, (char *)event.data.scalar.value);
+                            strncpy(cfg->nodes[node_index].address, (char *)event.data.scalar.value, sizeof(cfg->nodes[node_index].address) - 1);
                         else if (strcmp(key, "os") == 0)
-                            strcpy(cfg->nodes[node_index].os, (char *)event.data.scalar.value);
+                            strncpy(cfg->nodes[node_index].os, (char *)event.data.scalar.value, sizeof(cfg->nodes[node_index].os) - 1);
                     }
+
                     key[0] = '\0';
                 }
                 break;
@@ -68,12 +90,29 @@ Config* config_load(const char *path) {
                     in_nodes_seq = true;
                     node_index = -1;
                     key[0] = '\0';
+                    // Allocate nodes array
+                    cfg->nodes = calloc(MAX_NODES, sizeof(Node));
+                    if (!cfg->nodes) {
+                        fprintf(stderr, "Memory allocation failed for nodes array\n");
+                        yaml_parser_delete(&parser);
+                        fclose(fh);
+                        free(cfg);
+                        return NULL;
+                    }
                 }
                 break;
 
             case YAML_MAPPING_START_EVENT:
-                if (in_nodes_seq)
+                if (in_nodes_seq) {
                     node_index++;
+                    if (node_index >= MAX_NODES) {
+                        fprintf(stderr, "Warning: too many nodes defined (max %d)\n", MAX_NODES);
+                        node_index = MAX_NODES - 1;
+                    }
+                    cfg->node_count = node_index + 1;
+                    // Debug info
+                    printf("Parsing node #%d...\n", node_index + 1);
+                }
                 break;
 
             case YAML_SEQUENCE_END_EVENT:
@@ -95,4 +134,13 @@ done:
     yaml_parser_delete(&parser);
     fclose(fh);
     return cfg;
+}
+
+void config_free(Config *cfg) {
+    if (!cfg) return;
+    if (cfg->nodes) {
+        free(cfg->nodes);
+        cfg->nodes = NULL;
+    }
+    free(cfg);
 }
