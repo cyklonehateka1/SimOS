@@ -50,10 +50,8 @@ Config* config_load(const char *path) {
         switch (event.type) {
             case YAML_SCALAR_EVENT:
                 if (!key[0]) {
-                    // First scalar = key
                     strncpy(key, (char *)event.data.scalar.value, sizeof(key) - 1);
                 } else {
-                    // Second scalar = value
                     if (!in_nodes_seq) {
                         if (strcmp(key, "db_path") == 0)
                             strncpy(cfg->db_path, (char *)event.data.scalar.value, sizeof(cfg->db_path) - 1);
@@ -62,9 +60,8 @@ Config* config_load(const char *path) {
                         else if (strcmp(key, "listen_port") == 0)
                             cfg->listen_port = atoi((char *)event.data.scalar.value);
                     } else {
-                        // Inside a node object
                         if (node_index < 0) {
-                            node_index = 0; // ensure valid index if missing mapping start
+                            node_index = 0; 
                             cfg->node_count = 1;
                         }
 
@@ -90,7 +87,6 @@ Config* config_load(const char *path) {
                     in_nodes_seq = true;
                     node_index = -1;
                     key[0] = '\0';
-                    // Allocate nodes array
                     cfg->nodes = calloc(MAX_NODES, sizeof(Node));
                     if (!cfg->nodes) {
                         fprintf(stderr, "Memory allocation failed for nodes array\n");
@@ -110,7 +106,6 @@ Config* config_load(const char *path) {
                         node_index = MAX_NODES - 1;
                     }
                     cfg->node_count = node_index + 1;
-                    // Debug info
                     printf("Parsing node #%d...\n", node_index + 1);
                 }
                 break;

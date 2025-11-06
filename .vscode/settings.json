@@ -11,6 +11,9 @@
         "stdbool.h": "c",
         "in.h": "c",
         "socket.h": "c",
-        "loop.h": "c"
+        "loop.h": "c",
+        "sstream": "c",
+        "__bit_reference": "c",
+        "__split_buffer": "c"
     }
 }
