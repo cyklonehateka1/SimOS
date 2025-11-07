@@ -60,9 +60,6 @@ int ipc_server_start(GlobalState *state) {
         close(sock);
         return -1;
     }
-
-    // 8. Store in state and return
-    // state->server_fd = sock;  // Assuming GlobalState has server_fd field
     
     log_info("IPC server started successfully on port %d", state->config->listen_port);
     
@@ -97,7 +94,6 @@ ssize_t ipc_send_full(int fd, const char *buf, size_t len){
     bool needs_newline = (buf[len - 1] != '\n');
     size_t total_len = len + (needs_newline ? 1 : 0);
 
-    // Create a buffer with newline if needed
     char *send_buf;
     if (needs_newline) {
         send_buf = malloc(total_len);
@@ -108,7 +104,7 @@ ssize_t ipc_send_full(int fd, const char *buf, size_t len){
         memcpy(send_buf, buf, len);
         send_buf[len] = '\n';
     } else {
-        send_buf = (char*)buf;  // Use original buffer
+        send_buf = (char*)buf;
     }
 
     ssize_t total_sent = 0;
@@ -127,43 +123,6 @@ ssize_t ipc_send_full(int fd, const char *buf, size_t len){
 
     return total_sent;
 }
-
-// char *ipc_recv_line(int fd, int timeout_ms){
-//     if (fd == NULL || timeout_ms == NULL){
-//         log_error("Error: All properties in ipc_recv_line are required.");
-//         reurn NULL;
-//     }
-//     char tempbuf[256];
-//     char *buffer = malloc(1024);
-//     size_t buff_len = strlen(buffer);
-//     size_t offset = 0;
-
-//     for (int i = 0; i < buff_len; i++){
-//         ssize_t n= recv(fd, tempbuf, 1, 0);
-
-//         if (n == 0){
-//             free(buffer);
-//             return NULL;
-//         }
-//         memcpy(buffer + offset, tempbuf, n);
-//         offset += n;
-
-//         if (buffer[buff_len] == '\n'){
-//             break;
-//         }
-
-//         if (offset + 256 > buff_len) {
-//             buff_len *= 2;
-//             buffer = realloc(buffer, buff_len);
-//         }
-//     }
-
-   
-//     return buffer; 
-
-// }
-
-
 
 char *ipc_recv_line(int fd, int timeout_ms) {
      if (fd == NULL || timeout_ms == NULL){

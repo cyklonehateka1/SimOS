@@ -1,6 +1,8 @@
 #include "../include/env.h"
 #include "../include/loop.h"
 #include "../include/logging.h"
+#include "../include/node_manager.h"
+#include "../include/init.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +14,10 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 
 
 char *get_token(const char *input, const char *delimiter, int index) {
@@ -210,3 +216,109 @@ bool starts_with(const char *str, const char *prefix) {
     return len_str < len_prefix ? false : strncmp(str, prefix, len_prefix) == 0;
 }
 
+void node_sessions_init(void){
+    NodeSession sessions[MAX_SESSIONS];
+    static int initialized = 0;
+
+    if (initialized > 0){
+        return;
+    }
+
+    for (int i = 0; i < MAX_SESSIONS-1; i++){
+        sessions[i].fd = -1;
+        sessions[i].connected = 0; sessions[i].last_seen=0;
+    }
+    initialized = 1;
+}
+
+NodeSession *node_session_add(const Node *node_meta, int fd){
+    if (node_meta==NULL || fd<0) return NULL;
+
+    NodeSession session;
+    for (int i = 0; i < MAX_SESSIONS; I++) {
+        if (strcmp(sessions->meta_data->name, node_meta->name)){
+            if (session->fd != fd){
+                close(session->fd);
+            }
+            strcpy(session->meta.name, node_meta->name);
+            strcpy(session->meta.address, node_meta->address);
+            strcpy(session->meta.os, node_meta->os);
+
+            session->fd = fd;
+            session->connected = 1;
+            session->last_seen = time(NULL);
+        }else{
+            bool find_free = session->connected==0;
+            if (!find_free){
+                log_error("max sessions reached");
+                return NULL;
+            }
+        }
+    }
+ 
+}
+
+void node_session_remove_by_name(const char *name){
+    NodeSession sessions[MAX_SESSIONS];
+    for (int i = 0; i < MAX_SESSIONS; i++){
+        if (fd>=0) close(fd)
+    }
+}
+void node_session_remove_by_fd(int fd){
+     NodeSession sessions[MAX_SESSIONS];
+    for (int i = 0; i < MAX_SESSIONS; i++){
+        if (fd>=0) close(fd);
+        
+    }
+}
+
+NodeSession *node_session_find_by_name(const char *name){
+     NodeSession sessions[MAX_SESSIONS];
+    for (int i = 0; i < MAX_SESSIONS; i++){
+        if (fd>=0) close(fd);
+        
+    }
+}
+
+NodeSession *node_session_find_by_fd(int fd){
+     NodeSession sessions[MAX_SESSIONS];
+    for (int i = 0; i < MAX_SESSIONS; i++){
+        if (fd>=0) close(fd);
+        
+    }
+}
+
+ssize_t node_session_send(NodeSession *s, const char *msg){
+    if ( s==NULL || msg==NULL)  return -1;
+    ssize_t send_full = ipc_send_full(s->fd, msg, strlen(msg));
+    return send_full;
+}
+
+int node_sessions_fill_pollfds(struct pollfd *pfds, int max_fds){
+    int idx = 0;
+    NodeSession sessions[MAX_SESSIONS];
+
+    for (int i = 0; i < sessions; i++){
+        NodeSession session = sessions[i];
+        if (session.connected > 0){
+            if (idx >= max_fds) return idx;
+            pfds[idx].fd = session.fd;
+            pfds[idx].events = POLLIN;
+            idx++;
+        }
+    }
+    return idx;
+}
+
+void node_sessions_cleanup(void){
+    NodeSession sessions[MAX_SESSIONS];
+
+    for (int i = 0; i < sessions; i++){
+        NodeSession session = sessions[i];
+        if (session.connected){
+            close(session.fd);
+            session.connected=0;
+        }
+    }
+   
+}
