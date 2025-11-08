@@ -31,8 +31,6 @@ Config* config_load(const char *path) {
         return NULL;
     }
 
-    memset(cfg, 0, sizeof(Config));
-
     char key[256] = {0};
     int node_index = -1;
     bool in_nodes_seq = false;
@@ -125,10 +123,10 @@ Config* config_load(const char *path) {
         yaml_event_delete(&event);
     }
 
-done:
-    yaml_parser_delete(&parser);
-    fclose(fh);
-    return cfg;
+    done:
+        yaml_parser_delete(&parser);
+        fclose(fh);
+        return cfg;
 }
 
 void config_free(Config *cfg) {

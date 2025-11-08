@@ -1,13 +1,16 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <poll.h>
 
 #include "../include/loop.h"
 #include "../include/logging.h"
-#include "../include/init.h"
+#include "../include/ipc.h"
 #include "../include/node_manager.h"
 #include "../include/cli.h"
+#include "../include/env.h"
 
 GlobalState init_global_state(void) {
     GlobalState state;
@@ -15,111 +18,132 @@ GlobalState init_global_state(void) {
     return state;
 }
 
-void run_event_loop(GlobalState *state) {
-
-    if (state == NULL || state->config != NULL){ 
-        log_error("Invalid config");
-        exit(-1);
+static char *read_stdin_line(void) {
+    size_t cap = 512;
+    size_t len = 0;
+    char *buf = malloc(cap);
+    if (!buf) return NULL;
+    while (1) {
+        ssize_t r = read(STDIN_FILENO, buf + len, 1);
+        if (r <= 0) {
+            if (len == 0) { free(buf); return NULL; }
+            break;
+        }
+        if (buf[len] == '\n') {
+            buf[len] = '\0';
+            return buf;
+        }
+        len++;
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char *n = realloc(buf, cap);
+            if (!n) { free(buf); return NULL; }
+            buf = n;
+        }
     }
+    buf[len] = '\0';
+    return buf;
+}
 
-    int server_fd = ipc_server_start(state);
-    if (server_fd < 0){
-        log_error("Error creating socket");
-        exit(-1);
+void handle_node_message(int fd, const char *msg, GlobalState *state);
+
+void run_event_loop(GlobalState *state) {
+    if (!state || !state->config) {
+        log_error("run_event_loop: invalid global state");
+        return;
     }
 
     node_sessions_init();
 
-    int max_fds = 1;
+    int server_fd = ipc_server_start(state);
+    if (server_fd < 0) {
+        log_error("Failed to start IPC server");
+        return;
+    }
 
-    struct pollfd pfds[max_fds];
+    const int MAX_PFDS = 2 + MAX_SESSIONS + 5;
+    struct pollfd *pfds = calloc(MAX_PFDS, sizeof(struct pollfd));
+    if (!pfds) {
+        log_error("malloc pfds failed");
+        ipc_server_stop();
+        return;
+    }
 
-    while(1){
+    while (1) {
         int nfds = 0;
         pfds[nfds].fd = STDIN_FILENO;
         pfds[nfds].events = POLLIN;
+        pfds[nfds].revents = 0;
         nfds++;
 
         pfds[nfds].fd = server_fd;
         pfds[nfds].events = POLLIN;
+        pfds[nfds].revents = 0;
         nfds++;
 
-        nfds += node_sessions_fill_pollfds(&pfds[nfds], max_fds - nfds);
-        int timeout_ms = 1000;
+        int filled = node_sessions_fill_pollfds(&pfds[nfds], MAX_PFDS - nfds);
+        nfds += filled;
 
+        int timeout_ms = 1000;
         int rc = poll(pfds, nfds, timeout_ms);
-        if (rc < 0){
-            if (errno==EINTR) continue;
-            log_error("Something went wrong");
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            log_error("poll() error: %s", strerror(errno));
             break;
         }
 
-        if (rc == 0){
-           continue;
-        }
-        
         int idx = 0;
-
-        // Check STDIN
         if (pfds[idx].revents & POLLIN) {
-            // Read one line from stdin
-            char *line = NULL;
-            size_t len = 0;
-            ssize_t nread = getline(&line, &len, stdin);
-            
-            if (nread > 0) {
-                // Trim newline
-                if (line[nread - 1] == '\n') {
-                    line[nread - 1] = '\0';
-                }
-                
-                // Parse and execute the command
+            char *line = read_stdin_line();
+            if (line) {
                 parse_cli_command(line);
+                free(line);
+            } else {
+                log_info("stdin closed, shutting down");
+                break;
             }
-            
-            // Free the line allocated by getline
-            free(line);
         }
         idx++;
 
-        if (pfds[idx].revents & POLLIN){
-            int new_fd = ipc_accept_connection(server_fd);
-            
-            if (new_fd >= 0){
-                char *hello = ipc_recv_line(new_fd, 2000);
-                if (hello == NULL) {
-                    close(new_fd);
-                }else{
-                    // parse hello JSON -> Node hello_meta
-                    Node hello_meta = parse_hello(hello); // implement below
-                    node_session_add(&hello_meta, new_fd);
+        if (pfds[idx].revents & POLLIN) {
+            int cfd = ipc_accept_connection(server_fd);
+            if (cfd >= 0) {
+                char *hello = ipc_recv_line(cfd, 2000);
+                if (!hello) {
+                    close(cfd);
+                    log_error("No hello from new connection, closed");
+                } else {
+                    Node meta = {0};
+                    if (parse_hello_message(hello, &meta) == 0) {
+                        node_session_add(&meta, cfd);
+                    } else {
+                        log_error("Invalid hello message: %s", hello);
+                        close(cfd);
+                    }
                     free(hello);
                 }
-                   
             }
-            idx++;
-
         }
+        idx++;
 
-        for (p = idx..nfds-1){
-            if (pfds[p].revents & (POLLIN | POLLPRI)){
+        for (int p = idx; p < nfds; ++p) {
+            if (pfds[p].revents & (POLLIN | POLLPRI)) {
                 int fd = pfds[p].fd;
                 char *msg = ipc_recv_line(fd, 0);
-
-                if (msg == NULL){
+                if (!msg) {
                     node_session_remove_by_fd(fd);
-                } else{
-                handle_node_message(fd, msg, state);
-                free(msg);
-            } 
-
-            }else if (pfds[p].revents & (POLLHUP | POLLERR | POLLNVAL)){
+                } else {
+                    handle_node_message(fd, msg, state);
+                    free(msg);
+                }
+            } else if (pfds[p].revents & (POLLHUP | POLLERR | POLLNVAL)) {
                 node_session_remove_by_fd(pfds[p].fd);
             }
         }
+
     }
 
-    ipc_server_stop(state, server_fd) || close(server_fd);
+    free(pfds);
     node_sessions_cleanup();
-    
+    ipc_server_stop();
 }

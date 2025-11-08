@@ -1,211 +1,181 @@
-#include <stdio.h>
-#include "../include/init.h"
-#include "../include/loop.h"
-#include "../include/logging.h"
-
+#define _POSIX_C_SOURCE 200112L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <fcntl.h>
+#include <arpa/inet.h>
 #include <poll.h>
 
+#include "../../include/ipc.h"
+#include "../../include/logging.h"
+#include "../../include/env.h"
+#include "../../include/node_manager.h"
+
+static int listen_fd = -1;
 
 int ipc_server_start(GlobalState *state) {
-
-    if (state==NULL || state->config == NULL) {
-        log_error("Error loading config");
+    if (!state || !state->config) {
+        log_error("ipc_server_start: invalid state or config");
         return -1;
     }
 
-    int sock = socket(AF_INET, SOCK_STREAM, 0 );
+    int port = state->config->listen_port;
+    if (port <= 0) port = 5050;
 
-    if (sock < 0){
-        log_error("Error creating connection");
+    int sfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sfd < 0) {
+        log_error("socket() failed: %s", strerror(errno));
+        return -1;
     }
 
     int opt = 1;
+    if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        log_error("setsockopt(SO_REUSEADDR) failed: %s", strerror(errno));
+    }
 
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in addr;
-
-    addr.sin_family = AF_INET6;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(state->config->listen_port || DEFAULT_NODE_PORT);
+    addr.sin_port = htons((uint16_t)port);
 
-    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 1) {
-        log_error("Error binding socket");
-        close(sock);
-        return -1;
-    }
-
-    if (listen(sock, SOMAXCONN)){
-        og_error("Error getting socket flags: %s", strerror(errno));
-        close(sock);
+    if (bind(sfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        log_error("bind() failed: %s", strerror(errno));
+        close(sfd);
         return -1;
     }
 
-    int flags = fcntl(sock, F_GETFL, 0);
-    if (flags < 0) {
-        log_error("Error getting socket flags: %s", strerror(errno));
-        close(sock);
+    if (listen(sfd, SOMAXCONN) < 0) {
+        log_error("listen() failed: %s", strerror(errno));
+        close(sfd);
         return -1;
     }
-    
-    if (fcntl(sock, F_SETFL, flags | O_NONBLOCK) < 0) {
-        log_error("Error setting socket to non-blocking: %s", strerror(errno));
-        close(sock);
-        return -1;
+
+    int flags = fcntl(sfd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(sfd, F_SETFL, flags | O_NONBLOCK);
     }
-    
-    log_info("IPC server started successfully on port %d", state->config->listen_port);
-    
-    return sock;
-  
+
+    listen_fd = sfd;
+    log_info("IPC server listening on port %d (fd=%d)", port, listen_fd);
+    return listen_fd;
 }
 
-int ipc_server_stop(GlobalState *state, int *fd){
-    close(fd);
-    log_info("IPC server stopped");
-     return 0;
+int ipc_server_stop(void) {
+    if (listen_fd >= 0) {
+        close(listen_fd);
+        listen_fd = -1;
+        log_info("IPC server stopped");
+    }
+    return 0;
 }
 
-int ipc_accept_connection(int server_fd){
-    size_t addr_len = sizeof( struct sockaddr_in);
-    int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
-
-    if (client_fd < 0){
-        log_error("Error accepting client %d", strerror(errno));
-        return -1;
-    }
-
-    return client_fd;
-}
-
-ssize_t ipc_send_full(int fd, const char *buf, size_t len){
-    if (buf == NULL || len==0){
-        log_error("invalid buf or length");
-        return -1;
-    }
-
-    bool needs_newline = (buf[len - 1] != '\n');
-    size_t total_len = len + (needs_newline ? 1 : 0);
-
-    char *send_buf;
-    if (needs_newline) {
-        send_buf = malloc(total_len);
-        if (send_buf == NULL) {
-            log_error("malloc failed");
+int ipc_accept_connection(int listen_fd_local) {
+    if (listen_fd_local < 0) return -1;
+    struct sockaddr_in claddr;
+    socklen_t cllen = sizeof(claddr);
+    int cfd = accept(listen_fd_local, (struct sockaddr *)&claddr, &cllen);
+    if (cfd < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
             return -1;
         }
-        memcpy(send_buf, buf, len);
-        send_buf[len] = '\n';
-    } else {
-        send_buf = (char*)buf;
+        log_error("accept() failed: %s", strerror(errno));
+        return -1;
+    }
+    int flags = fcntl(cfd, F_GETFL, 0);
+    if (flags >= 0) fcntl(cfd, F_SETFL, flags | O_NONBLOCK);
+
+    char addrbuf[INET_ADDRSTRLEN] = {0};
+    inet_ntop(AF_INET, &claddr.sin_addr, addrbuf, sizeof(addrbuf));
+    log_info("Accepted connection from %s fd=%d", addrbuf, cfd);
+    return cfd;
+}
+
+ssize_t ipc_send_full(int fd, const char *buf, size_t len) {
+    if (fd < 0 || !buf) return -1;
+    size_t total = 0;
+    int has_nl = (len > 0 && buf[len-1] == '\n');
+    size_t send_len = len + (has_nl ? 0 : 1);
+    char *tmp = NULL;
+    if (!has_nl) {
+        tmp = malloc(send_len + 1);
+        if (!tmp) return -1;
+        memcpy(tmp, buf, len);
+        tmp[len] = '\n';
+        tmp[len+1] = '\0';
     }
 
-    ssize_t total_sent = 0;
+    const char *p = has_nl ? buf : tmp;
 
-    while (total_len < len){
-        ssize_t s = send(fd, buf + total_sent, len - total_sent, 0);
-
-        if (s < 1) {
-            log_error("Error accepting client %d", strerror(errno));
-           if (errno == EINTR) continue;
-
-           log_error("send() failed: %s", strerror(errno)); return -1;
+    while (total < send_len) {
+        ssize_t s = send(fd, p + total, send_len - total, 0);
+        if (s < 0) {
+            if (errno == EINTR) continue;
+            if (tmp) free(tmp);
+            log_error("send() failed fd=%d: %s", fd, strerror(errno));
+            return -1;
         }
-        total_sent += s;
+        total += (size_t)s;
     }
 
-    return total_sent;
+    if (tmp) free(tmp);
+    return (ssize_t)total;
 }
 
 char *ipc_recv_line(int fd, int timeout_ms) {
-     if (fd == NULL || timeout_ms == NULL){
-        log_error("Error: All properties in ipc_recv_line are required.");
-        reurn NULL;
-    }
-    
-    size_t capacity = 1024;
-    size_t offset = 0;
-    char *buffer = malloc(capacity);
-    
-    if (buffer == NULL) {
-        log_error("malloc failed");
-        return NULL;
+    if (fd < 0) return NULL;
+
+    if (timeout_ms >= 0) {
+        struct pollfd p;
+        p.fd = fd; p.events = POLLIN;
+        int rc = poll(&p, 1, timeout_ms);
+        if (rc == 0) return NULL;
+        if (rc < 0 && errno != EINTR) return NULL;
     }
 
-    if (timeout_ms > 0) {
-        struct pollfd pfd;
-        pfd.fd = fd;
-        pfd.events = POLLIN;
-        
-        int poll_result = poll(&pfd, 1, timeout_ms);
-        
-        if (poll_result < 0) {
-            log_error("poll failed: %s", strerror(errno));
-            free(buffer);
-            return NULL;
-        }
-        
-        if (poll_result == 0) {
-            log_error("timeout waiting for data");
-            free(buffer);
-            return NULL;
-        }
-    }
+    size_t cap = 1024;
+    size_t len = 0;
+    char *buf = malloc(cap);
+    if (!buf) return NULL;
 
     while (1) {
-        char tempbuf[1];
-        
-        ssize_t n = recv(fd, tempbuf, 1, 0);
-        
-        if (n == 0) {
-            log_error("connection closed by peer");
-            free(buffer);
+        char c;
+        ssize_t r = recv(fd, &c, 1, 0);
+        if (r == 0) {
+            free(buf);
             return NULL;
-        }
-        
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            
+        } else if (r < 0) {
+            if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                continue;
+                if (len == 0) {
+                    free(buf);
+                    return NULL;
+                } else {
+                    break;
+                }
             }
-            
-            log_error("recv failed: %s", strerror(errno));
-            free(buffer);
+            free(buf);
             return NULL;
-        }
-        
-        buffer[offset] = tempbuf[0];
-        offset++;
-        if (tempbuf[0] == '\n') {
-            break;
-        }
-        if (offset >= capacity - 1) {
-            capacity *= 2;
-            char *new_buffer = realloc(buffer, capacity);
-            if (new_buffer == NULL) {
-                log_error("realloc failed");
-                free(buffer);
-                return NULL;
+        } else {
+            if (len + 1 >= cap) {
+                cap *= 2;
+                if (cap > MAX_MSG_LEN) {
+                    free(buf);
+                    return NULL;
+                }
+                char *n = realloc(buf, cap);
+                if (!n) { free(buf); return NULL; }
+                buf = n;
             }
-            buffer = new_buffer;
+            if (c == '\n') break;
+            buf[len++] = c;
         }
     }
-    
-    buffer[offset] = '\0';
-    if (offset > 0 && buffer[offset - 1] == '\n') {
-        buffer[offset - 1] = '\0';
-        offset--;
-    }
-    
-    return buffer;
+
+    buf[len] = '\0';
+    return buf;
 }

@@ -15,6 +15,8 @@
         "sstream": "c",
         "__bit_reference": "c",
         "__split_buffer": "c",
-        "typeinfo": "c"
+        "typeinfo": "c",
+        "inet.h": "c",
+        "errno.h": "c"
     }
 }
