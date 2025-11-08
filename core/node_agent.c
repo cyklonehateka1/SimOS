@@ -42,7 +42,6 @@ int node_agent_connect(const char *controller_host, int controller_port) {
         return -1;
     }
 
-    // Optionally set blocking mode (we expect blocking recv for run loop)
     int flags = fcntl(sock, F_GETFL, 0);
     if (flags >= 0) {
         flags &= ~O_NONBLOCK;
@@ -53,22 +52,12 @@ int node_agent_connect(const char *controller_host, int controller_port) {
     return sock;
 }
 
-/*
- * node_agent_register
- *  - sock: connected socket to controller
- *  - node_name: identifier string
- *  - osstr: OS string (e.g. "linux")
- * Sends:
- *   {"type":"hello","name":"node_name","os":"osstr","address":"<ip>"}
- * and waits for optional ack (2s timeout). Returns 0 on success, -1 on failure.
- */
 int node_agent_register(int sock, const char *node_name, const char *osstr) {
     if (sock < 0 || !node_name) {
         log_error("node_agent_register: invalid args");
         return -1;
     }
 
-    // Build hello JSON. Address field uses localhost placeholder — the node can later improve this.
     char hello[1024];
     int n = snprintf(hello, sizeof(hello),
                      "{\"type\":\"hello\",\"name\":\"%s\",\"os\":\"%s\",\"address\":\"%s\"}\n",
@@ -83,34 +72,24 @@ int node_agent_register(int sock, const char *node_name, const char *osstr) {
         return -1;
     }
 
-    // Optionally wait for ack (non-mandatory). We'll wait up to 2000ms for a response.
     char *reply = ipc_recv_line(sock, 2000);
     if (!reply) {
-        // no reply — still OK; controller may not ack
         log_info("No ack received after hello (continuing)");
         return 0;
     }
 
-    // If reply contains type:"ack" and status:"ok", treat as success
     if (strstr(reply, "\"type\":\"ack\"") && strstr(reply, "\"status\":\"ok\"")) {
         free(reply);
         log_info("Registration acknowledged by controller");
         return 0;
     }
 
-    // Otherwise it's not an ack — still continue but log it
     log_info("Registration reply: %s", reply);
     free(reply);
     return 0;
 }
 
-/*
- * execute_system_command_fork
- *  - cmd: shell command string
- *  - out_exitcode: pointer to int to store exit code (may be NULL)
- *  - out_stderr: pointer to char* to receive heap-allocated stderr (must be freed by caller). May be NULL if user not interested.
- * Returns heap-allocated stdout string (caller must free). On error returns strdup("") and sets exit code to 127.
- */
+
 char *execute_system_command_fork(const char *cmd, int *out_exitcode, char **out_stderr) {
     if (!cmd) {
         if (out_exitcode) *out_exitcode = 127;
@@ -136,7 +115,6 @@ char *execute_system_command_fork(const char *cmd, int *out_exitcode, char **out
 
     pid_t pid = fork();
     if (pid < 0) {
-        // fork failed
         close(outpipe[0]); close(outpipe[1]);
         close(errpipe[0]); close(errpipe[1]);
         log_error("fork() failed: %s", strerror(errno));
@@ -146,30 +124,22 @@ char *execute_system_command_fork(const char *cmd, int *out_exitcode, char **out
     }
 
     if (pid == 0) {
-        // Child: redirect stdout and stderr and exec shell
-        // Close read ends
         close(outpipe[0]);
         close(errpipe[0]);
 
-        // Dup write ends to stdout and stderr
         dup2(outpipe[1], STDOUT_FILENO);
         dup2(errpipe[1], STDERR_FILENO);
 
-        // Close original write fds if they are not STDOUT/STDERR
         close(outpipe[1]);
         close(errpipe[1]);
 
-        // Execute command via shell
         execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
 
-        // If exec fails:
         _exit(127);
     } else {
-        // Parent: close write ends and read child's stdout/stderr
         close(outpipe[1]);
         close(errpipe[1]);
 
-        // Read stdout
         size_t out_cap = 4096;
         size_t out_len = 0;
         char *out_buf = malloc(out_cap);
@@ -190,7 +160,6 @@ char *execute_system_command_fork(const char *cmd, int *out_exitcode, char **out
         }
         close(outpipe[0]);
 
-        // Read stderr
         size_t err_cap = 1024;
         size_t err_len = 0;
         char *err_buf = malloc(err_cap);
@@ -211,7 +180,6 @@ char *execute_system_command_fork(const char *cmd, int *out_exitcode, char **out
         }
         close(errpipe[0]);
 
-        // Wait for child
         int status = 0;
         waitpid(pid, &status, 0);
         if (out_exitcode) {
@@ -227,10 +195,6 @@ char *execute_system_command_fork(const char *cmd, int *out_exitcode, char **out
     }
 }
 
-/*
- * naive helper: escape JSON string (replace " \ and newline)
- * returns heap-allocated escaped string (caller frees)
- */
 static char *escape_json_string(const char *in) {
     if (!in) return strdup("");
     size_t len = strlen(in);
@@ -258,10 +222,6 @@ static char *escape_json_string(const char *in) {
     return out;
 }
 
-/*
- * naive JSON extraction helpers (look for "key":"value")
- * returns heap-allocated value or NULL
- */
 static char *json_get_str(const char *json, const char *key) {
     if (!json || !key) return NULL;
     char needle[128];
@@ -270,7 +230,6 @@ static char *json_get_str(const char *json, const char *key) {
     if (!pos) return NULL;
     char *colon = strchr(pos, ':');
     if (!colon) return NULL;
-    // find first quote after colon
     char *firstq = strchr(colon, '\"');
     if (!firstq) return NULL;
     char *secondq = strchr(firstq + 1, '\"');
@@ -283,13 +242,7 @@ static char *json_get_str(const char *json, const char *key) {
     return out;
 }
 
-/*
- * node_agent_run_loop
- *  - sock: connected controller socket
- *  - node_name: node identifier (used in logs)
- *
- * This will block and run until controller closes connection or an error occurs.
- */
+
 void node_agent_run_loop(int sock, const char *node_name) {
     if (sock < 0) {
         log_error("node_agent_run_loop: invalid socket");
@@ -299,13 +252,12 @@ void node_agent_run_loop(int sock, const char *node_name) {
     log_info("Node agent [%s] entering run loop (fd=%d)", node_name ? node_name : "<anon>", sock);
 
     while (1) {
-        char *msg = ipc_recv_line(sock, -1); // block indefinitely
+        char *msg = ipc_recv_line(sock, -1);
         if (!msg) {
             log_info("Controller closed connection or recv error; exiting run loop");
             break;
         }
 
-        // parse "type"
         char *type = json_get_str(msg, "type");
         if (!type) {
             log_error("Malformed message (no type): %s", msg);
@@ -327,11 +279,9 @@ void node_agent_run_loop(int sock, const char *node_name) {
             char *stdout_out = execute_system_command_fork(cmd, &exitcode, &stderr_out);
             if (!stdout_out) stdout_out = strdup("");
 
-            // escape outputs
             char *esc_out = escape_json_string(stdout_out);
             char *esc_err = escape_json_string(stderr_out ? stderr_out : "");
 
-            // build response JSON: {"type":"result","id":"...", "exit":0, "stdout":"...", "stderr":"..."}
             size_t resp_cap = strlen(esc_out) + strlen(esc_err) + strlen(id) + 256;
             char *resp = malloc(resp_cap);
             if (resp) {
@@ -354,7 +304,6 @@ void node_agent_run_loop(int sock, const char *node_name) {
             free(msg);
             continue;
         } else if (strcmp(type, "ping") == 0) {
-            // send pong
             const char *pong = "{\"type\":\"pong\"}\n";
             ipc_send_full(sock, pong, strlen(pong));
             free(type);

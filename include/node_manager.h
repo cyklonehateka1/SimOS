@@ -6,7 +6,7 @@
 #include "env.h"
 
 #define MAX_SESSIONS 128
-#define MAX_MSG_LEN (256 * 1024) // 256KB
+#define MAX_MSG_LEN (256 * 1024)
 
 typedef struct {
     Node meta;

@@ -18,7 +18,6 @@ GlobalState init_global_state(void) {
     return state;
 }
 
-// helper to read a line from stdin (heap-allocated)
 static char *read_stdin_line(void) {
     size_t cap = 512;
     size_t len = 0;
@@ -46,10 +45,8 @@ static char *read_stdin_line(void) {
     return buf;
 }
 
-// Forward declare handler implemented in node_manager or controller
 void handle_node_message(int fd, const char *msg, GlobalState *state);
 
-// Run the main event loop: watches stdin, the listen socket, and all node sockets.
 void run_event_loop(GlobalState *state) {
     if (!state || !state->config) {
         log_error("run_event_loop: invalid global state");
@@ -84,11 +81,10 @@ void run_event_loop(GlobalState *state) {
         pfds[nfds].revents = 0;
         nfds++;
 
-        // fill client fds
         int filled = node_sessions_fill_pollfds(&pfds[nfds], MAX_PFDS - nfds);
         nfds += filled;
 
-        int timeout_ms = 1000; // 1s - for periodic tasks
+        int timeout_ms = 1000;
         int rc = poll(pfds, nfds, timeout_ms);
         if (rc < 0) {
             if (errno == EINTR) continue;
@@ -96,27 +92,22 @@ void run_event_loop(GlobalState *state) {
             break;
         }
 
-        // check stdin
         int idx = 0;
         if (pfds[idx].revents & POLLIN) {
             char *line = read_stdin_line();
             if (line) {
-                // parse_cli_command is in controller/cli.c
                 parse_cli_command(line);
                 free(line);
             } else {
-                // EOF on stdin -> shutdown
                 log_info("stdin closed, shutting down");
                 break;
             }
         }
         idx++;
 
-        // check server listen
         if (pfds[idx].revents & POLLIN) {
             int cfd = ipc_accept_connection(server_fd);
             if (cfd >= 0) {
-                // read hello message (with small timeout)
                 char *hello = ipc_recv_line(cfd, 2000);
                 if (!hello) {
                     close(cfd);
@@ -135,13 +126,11 @@ void run_event_loop(GlobalState *state) {
         }
         idx++;
 
-        // handle client fds
         for (int p = idx; p < nfds; ++p) {
             if (pfds[p].revents & (POLLIN | POLLPRI)) {
                 int fd = pfds[p].fd;
                 char *msg = ipc_recv_line(fd, 0);
                 if (!msg) {
-                    // connection closed or error
                     node_session_remove_by_fd(fd);
                 } else {
                     handle_node_message(fd, msg, state);
@@ -152,7 +141,6 @@ void run_event_loop(GlobalState *state) {
             }
         }
 
-        // periodic tasks: e.g., cleanup stale sessions (not implemented yet)
     }
 
     free(pfds);
