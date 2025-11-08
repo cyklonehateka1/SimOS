@@ -19,6 +19,12 @@ typedef struct {
     int node_count;
 } Config;
 
+typedef struct {
+    Config *config;
+} GlobalState;
+
+GlobalState init_global_state(void);
+
 Config* config_load(const char *path);
 void config_free(Config *cfg);
 

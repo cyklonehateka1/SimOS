@@ -2,11 +2,9 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include "../include/cli.h"
-#include "../include/controller.h"
 #include "../include/env.h"
 #include "../include/logging.h"
 #include "../include/loop.h"
-#include "../include/init.h"
 
 GlobalState global_state = {0};
 
@@ -31,11 +29,6 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
     log_info("Logger initialized");
-
-    if (!init_ipc_channels()) {
-        log_error("IPC initialization failed");
-        exit(EXIT_FAILURE);
-    }
 
     log_info("Initialization complete. Entering main event loop...");
     run_event_loop(&global_state);
