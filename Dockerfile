@@ -1,17 +1,22 @@
-# Use Ubuntu base
-FROM ubuntu:24.04
+FROM ubuntu:22.04
 
-# Install build tools
-RUN apt update && apt install -y build-essential cmake git
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libyaml-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set work directory
+# Set working directory
 WORKDIR /app
 
-# Copy SimOS source code
+# Copy source code into container
 COPY . .
 
 # Build SimOS
-RUN make   # or your build command
+RUN make
 
-# Set default command to run SimOS
+# Expose any port if needed (optional)
+# EXPOSE 8080
+
+# Run SimOS when container starts
 CMD ["./simos"]

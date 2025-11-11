@@ -13,24 +13,33 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Copy project files to VPS
-        uses: appleboy/scp-action@v0.1.6
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          host: ${{ secrets.VPS_IP }}
-          username: ${{ secrets.VPS_USER }}
-          password: ${{ secrets.VPS_PASSWORD }}
-          source: "."
-          target: "~/simos"
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and run Docker container on VPS
-        uses: appleboy/ssh-action@v0.1.6
+      - name: Build Docker image
+        run: |
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/simos:latest
+          docker build -t $IMAGE_NAME .
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+
+      - name: Push image to GHCR
+        run: docker push $IMAGE_NAME
+
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.1.0
         with:
           host: ${{ secrets.VPS_IP }}
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
           script: |
-            cd ~/simos
-            docker build -t simos:latest .
+            IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/simos:latest
+            echo "Pulling latest SimOS image..."
+            docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+            docker pull $IMAGE_NAME
             docker stop simos || true
             docker rm simos || true
-            docker run -d --name simos simos:latest
+            docker run -d --name simos $IMAGE_NAME
