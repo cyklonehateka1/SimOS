@@ -8,6 +8,8 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: ghcr.io/${{ github.actor }}/simos:latest
 
     steps:
       - name: Checkout repo
@@ -21,10 +23,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Docker image
-        run: |
-          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/simos:latest
-          docker build -t $IMAGE_NAME .
-          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+        run: docker build -t $IMAGE_NAME .
 
       - name: Push image to GHCR
         run: docker push $IMAGE_NAME
