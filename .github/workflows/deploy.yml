@@ -13,7 +13,7 @@ jobs:
       packages: write
 
     env:
-      IMAGE_NAME: ghcr.io/emmanuelhateka/simos:latest
+      IMAGE_NAME: ghcr.io/cyklonehateka1/simos:latest
 
     steps:
       - name: Checkout repo
