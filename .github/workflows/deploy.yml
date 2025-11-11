@@ -23,7 +23,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: emmanuelhateka
+          username: cyklonehateka1
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Docker image
@@ -39,9 +39,9 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           password: ${{ secrets.VPS_PASSWORD }}
           script: |
-            IMAGE_NAME=ghcr.io/emmanuelhateka/simos:latest
+            IMAGE_NAME=ghcr.io/cyklonehateka1/simos:latest
             echo "Pulling latest SimOS image..."
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u emmanuelhateka --password-stdin
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u cyklonehateka1 --password-stdin
             docker pull $IMAGE_NAME
             docker stop simos || true
             docker rm simos || true
