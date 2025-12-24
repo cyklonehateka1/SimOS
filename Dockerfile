@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y \
     libyaml-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# RUN mkdir -p /logs/
+
 # Set working directory
 WORKDIR /app
 
