@@ -4,7 +4,7 @@
 #include <stdbool.h>
 
 bool log_init(const char *path);
-void log_close();
+void log_close(void);
 void log_info(const char *fmt, ...);
 void log_error(const char *fmt, ...);
 

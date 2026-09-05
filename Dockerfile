@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y \
     libyaml-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# RUN mkdir -p /logs/
+
 # Set working directory
 WORKDIR /app
 
@@ -16,7 +18,7 @@ COPY . .
 RUN make
 
 # Expose any port if needed (optional)
-# EXPOSE 8080
+EXPOSE 9000
 
 # Run SimOS when container starts
 CMD ["./simos"]

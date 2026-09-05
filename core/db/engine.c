@@ -1,70 +1,47 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <sys/stat.h>
-#include <stdbool.h>
+#include "../../include/db.h"
 
-static char g_db_path[256];
+static FILE *database;
 
-bool db_init(const char *db_path) {
-    struct stat st;
-
-    strncpy(g_db_path, db_path, sizeof(g_db_path) - 1);
-    g_db_path[sizeof(g_db_path) - 1] = '\0';
-
-    if (stat(db_path, &st) != 0) {
-        FILE *f = fopen(db_path, "w");
-        if (!f) {
-            perror("Failed to create DB file");
-            return false;
-        }
-        fprintf(f, "# SimOS command database\n");
-        fclose(f);
-    }
-
-    FILE *test = fopen(db_path, "a+");
-    if (!test) {
-        perror("Failed to open DB file for read/write");
-        return false;
-    }
-    fclose(test);
-
+bool db_init(const char *path) {
+    if (!path || !path[0]) return false;
+    database = fopen(path, "a+");
+    if (!database) return false;
+    fseek(database, 0, SEEK_END);
+    if (ftell(database) == 0) fputs("# SimOS event journal v1\n", database);
+    fflush(database);
     return true;
 }
 
-bool db_store_command(const char *node_name, const char *command, const char *result) {
-    FILE *f = fopen(g_db_path, "a");
-    if (!f) {
-        perror("Failed to open DB file for writing");
-        return false;
+static void clean_field(char *out, size_t size, const char *in) {
+    size_t n = 0; if (!in) in = "";
+    while (*in && n + 1 < size) {
+        char c = *in++; out[n++] = (c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
     }
-
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    char timestamp[64];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
-
-    fprintf(f, "[%s] node=%s command=\"%s\" result=\"%s\"\n",
-            timestamp, node_name, command, result);
-
-    fclose(f);
-    return true;
+    out[n] = '\0';
 }
 
-void db_list_commands() {
-    FILE *f = fopen(g_db_path, "r");
-    if (!f) {
-        perror("Failed to open DB file for reading");
-        return;
-    }
+bool db_store_event(const char *node, const char *action, const char *details) {
+    if (!database) return false;
+    time_t now = time(NULL); struct tm value; char timestamp[32];
+    char safe_node[256], safe_action[64], safe_details[1024];
+    localtime_r(&now, &value);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S%z", &value);
+    clean_field(safe_node, sizeof(safe_node), node); clean_field(safe_action, sizeof(safe_action), action);
+    clean_field(safe_details, sizeof(safe_details), details);
+    fprintf(database, "%s\tnode=%s\taction=%s\tdetails=%s\n", timestamp, safe_node, safe_action, safe_details);
+    return fflush(database) == 0;
+}
 
-    char line[512];
-    printf("\n--- Stored Commands ---\n");
-    while (fgets(line, sizeof(line), f)) {
-        printf("%s", line);
-    }
-    printf("\n-----------------------\n");
+void db_list_events(void) {
+    if (!database) { puts("Event journal is unavailable."); return; }
+    fflush(database); rewind(database); puts("\n--- SimOS event journal ---");
+    char line[1400]; while (fgets(line, sizeof(line), database)) fputs(line, stdout);
+    puts("---------------------------"); fseek(database, 0, SEEK_END);
+}
 
-    fclose(f);
+void db_close(void) {
+    if (database) fclose(database); database = NULL;
 }

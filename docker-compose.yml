@@ -1,0 +1,21 @@
+services:
+  controller:
+    build: .
+    image: simos:local
+    command: ["./simos"]
+    stdin_open: true
+    tty: true
+    ports: ["9000:9000"]
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+  node1:
+    image: simos:local
+    command: ["./simos-agent", "--name", "node1", "--host", "controller", "--port", "9000"]
+    depends_on: [controller]
+    restart: on-failure
+  node2:
+    image: simos:local
+    command: ["./simos-agent", "--name", "node2", "--host", "controller", "--port", "9000"]
+    depends_on: [controller]
+    restart: on-failure
