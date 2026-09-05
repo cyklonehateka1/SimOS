@@ -45,4 +45,4 @@ jobs:
             docker pull $IMAGE_NAME
             docker stop simos || true
             docker rm simos || true
-            docker run -d --name simos $IMAGE_NAME
+            docker run -dit --restart unless-stopped -p 9000:9000 --name simos $IMAGE_NAME

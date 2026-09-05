@@ -1,11 +1,8 @@
-#include <stdlib.h>
 #include "../include/logging.h"
-#include "../include/env.h"
+#include "../include/loop.h"
 #include "../include/shutdown.h"
 
 void shutdown_gracefully(void) {
-    log_info("Shutting down SimOS gracefully...");
-
-    log_info("Shutdown complete. Goodbye!");
-    exit(0);
+    log_info("Shutdown requested");
+    request_event_loop_stop();
 }

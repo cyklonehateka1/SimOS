@@ -18,7 +18,7 @@ COPY . .
 RUN make
 
 # Expose any port if needed (optional)
-# EXPOSE 8080
+EXPOSE 9000
 
 # Run SimOS when container starts
 CMD ["./simos"]

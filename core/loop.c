@@ -12,6 +12,10 @@
 #include "../include/cli.h"
 #include "../include/env.h"
 
+static volatile int keep_running = 1;
+
+void request_event_loop_stop(void) { keep_running = 0; }
+
 GlobalState init_global_state(void) {
     GlobalState state;
     state.config = NULL;
@@ -23,7 +27,8 @@ static char *read_stdin_line(void) {
     size_t len = 0;
     char *buf = malloc(cap);
     if (!buf) return NULL;
-    while (1) {
+    keep_running = 1;
+    while (keep_running) {
         ssize_t r = read(STDIN_FILENO, buf + len, 1);
         if (r <= 0) {
             if (len == 0) { free(buf); return NULL; }
@@ -96,7 +101,7 @@ void run_event_loop(GlobalState *state) {
         if (pfds[idx].revents & POLLIN) {
             char *line = read_stdin_line();
             if (line) {
-                parse_cli_command(line);
+                parse_cli_command(line, state);
                 free(line);
             } else {
                 log_info("stdin closed, shutting down");
@@ -115,7 +120,12 @@ void run_event_loop(GlobalState *state) {
                 } else {
                     Node meta = {0};
                     if (parse_hello_message(hello, &meta) == 0) {
-                        node_session_add(&meta, cfd);
+                        if (node_session_add(&meta, cfd)) {
+                            const char *ack = "{\"type\":\"ack\",\"status\":\"ok\"}";
+                            ipc_send_full(cfd, ack, strlen(ack));
+                            printf("\n[+] child node '%s' joined the system\n", meta.name);
+                            fflush(stdout);
+                        } else close(cfd);
                     } else {
                         log_error("Invalid hello message: %s", hello);
                         close(cfd);

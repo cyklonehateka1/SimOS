@@ -9,9 +9,16 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <sys/utsname.h>
+#include <time.h>
+#include <netdb.h>
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
 #include "../include/logging.h"
 #include "../include/ipc.h"
+#include "../include/json.h"
 
 int node_agent_connect(const char *controller_host, int controller_port) {
     if (!controller_host || controller_port <= 0) {
@@ -25,16 +32,14 @@ int node_agent_connect(const char *controller_host, int controller_port) {
         return -1;
     }
 
-    struct sockaddr_in srv;
-    memset(&srv, 0, sizeof(srv));
-    srv.sin_family = AF_INET;
-    srv.sin_port = htons((uint16_t)controller_port);
-
-    if (inet_pton(AF_INET, controller_host, &srv.sin_addr) != 1) {
-        log_error("inet_pton failed for %s", controller_host);
-        close(sock);
-        return -1;
+    struct addrinfo hints = {0}, *addresses = NULL;
+    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+    char port_text[16]; snprintf(port_text, sizeof(port_text), "%d", controller_port);
+    int lookup = getaddrinfo(controller_host, port_text, &hints, &addresses);
+    if (lookup != 0 || !addresses) {
+        log_error("cannot resolve %s: %s", controller_host, gai_strerror(lookup)); close(sock); return -1;
     }
+    struct sockaddr_in srv; memcpy(&srv, addresses->ai_addr, sizeof(srv)); freeaddrinfo(addresses);
 
     if (connect(sock, (struct sockaddr *)&srv, sizeof(srv)) < 0) {
         log_error("connect to %s:%d failed: %s", controller_host, controller_port, strerror(errno));
@@ -97,26 +102,17 @@ char *execute_system_command_fork(const char *cmd, int *out_exitcode, char **out
         return strdup("");
     }
 
-    int outpipe[2];
-    int errpipe[2];
-    if (pipe(outpipe) != 0) {
-        log_error("pipe(out) failed: %s", strerror(errno));
+    FILE *out_file = tmpfile(), *err_file = tmpfile();
+    if (!out_file || !err_file) {
+        if (out_file) fclose(out_file); if (err_file) fclose(err_file);
         if (out_exitcode) *out_exitcode = 127;
-        if (out_stderr) *out_stderr = strdup("pipe failed");
-        return strdup("");
-    }
-    if (pipe(errpipe) != 0) {
-        close(outpipe[0]); close(outpipe[1]);
-        log_error("pipe(err) failed: %s", strerror(errno));
-        if (out_exitcode) *out_exitcode = 127;
-        if (out_stderr) *out_stderr = strdup("pipe failed");
+        if (out_stderr) *out_stderr = strdup("cannot create output buffers");
         return strdup("");
     }
 
     pid_t pid = fork();
     if (pid < 0) {
-        close(outpipe[0]); close(outpipe[1]);
-        close(errpipe[0]); close(errpipe[1]);
+        fclose(out_file); fclose(err_file);
         log_error("fork() failed: %s", strerror(errno));
         if (out_exitcode) *out_exitcode = 127;
         if (out_stderr) *out_stderr = strdup("fork failed");
@@ -124,62 +120,13 @@ char *execute_system_command_fork(const char *cmd, int *out_exitcode, char **out
     }
 
     if (pid == 0) {
-        close(outpipe[0]);
-        close(errpipe[0]);
-
-        dup2(outpipe[1], STDOUT_FILENO);
-        dup2(errpipe[1], STDERR_FILENO);
-
-        close(outpipe[1]);
-        close(errpipe[1]);
+        dup2(fileno(out_file), STDOUT_FILENO);
+        dup2(fileno(err_file), STDERR_FILENO);
 
         execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
 
         _exit(127);
     } else {
-        close(outpipe[1]);
-        close(errpipe[1]);
-
-        size_t out_cap = 4096;
-        size_t out_len = 0;
-        char *out_buf = malloc(out_cap);
-        if (!out_buf) {
-            out_buf = strdup("");
-        } else {
-            ssize_t r;
-            while ((r = read(outpipe[0], out_buf + out_len, out_cap - out_len - 1)) > 0) {
-                out_len += (size_t)r;
-                if (out_len + 256 >= out_cap) {
-                    out_cap *= 2;
-                    char *n = realloc(out_buf, out_cap);
-                    if (!n) break;
-                    out_buf = n;
-                }
-            }
-            out_buf[out_len] = '\0';
-        }
-        close(outpipe[0]);
-
-        size_t err_cap = 1024;
-        size_t err_len = 0;
-        char *err_buf = malloc(err_cap);
-        if (!err_buf) {
-            err_buf = strdup("");
-        } else {
-            ssize_t r;
-            while ((r = read(errpipe[0], err_buf + err_len, err_cap - err_len - 1)) > 0) {
-                err_len += (size_t)r;
-                if (err_len + 256 >= err_cap) {
-                    err_cap *= 2;
-                    char *n = realloc(err_buf, err_cap);
-                    if (!n) break;
-                    err_buf = n;
-                }
-            }
-            err_buf[err_len] = '\0';
-        }
-        close(errpipe[0]);
-
         int status = 0;
         waitpid(pid, &status, 0);
         if (out_exitcode) {
@@ -187,61 +134,20 @@ char *execute_system_command_fork(const char *cmd, int *out_exitcode, char **out
             else *out_exitcode = 127;
         }
 
-        if (out_stderr) *out_stderr = err_buf;
-        else free(err_buf);
-
-        if (!out_buf) return strdup("");
+        /* Keep two worst-case JSON-escaped streams below MAX_MSG_LEN. */
+        const size_t limit = 48 * 1024;
+        char *out_buf = malloc(limit + 1), *err_buf = malloc(limit + 1);
+        rewind(out_file); rewind(err_file);
+        size_t out_len = out_buf ? fread(out_buf, 1, limit, out_file) : 0;
+        size_t err_len = err_buf ? fread(err_buf, 1, limit, err_file) : 0;
+        if (out_buf) out_buf[out_len] = '\0';
+        if (err_buf) err_buf[err_len] = '\0';
+        fclose(out_file); fclose(err_file);
+        if (!out_buf) out_buf = strdup(""); if (!err_buf) err_buf = strdup("");
+        if (out_stderr) *out_stderr = err_buf; else free(err_buf);
         return out_buf;
     }
 }
-
-static char *escape_json_string(const char *in) {
-    if (!in) return strdup("");
-    size_t len = strlen(in);
-    size_t cap = len * 2 + 16;
-    char *out = malloc(cap);
-    if (!out) return strdup("");
-    size_t o = 0;
-    for (size_t i = 0; i < len; ++i) {
-        char c = in[i];
-        if (c == '"') {
-            if (o + 2 >= cap) { cap *= 2; out = realloc(out, cap); if (!out) return strdup(""); }
-            out[o++] = '\\'; out[o++] = '"';
-        } else if (c == '\\') {
-            if (o + 2 >= cap) { cap *= 2; out = realloc(out, cap); if (!out) return strdup(""); }
-            out[o++] = '\\'; out[o++] = '\\';
-        } else if (c == '\n') {
-            if (o + 2 >= cap) { cap *= 2; out = realloc(out, cap); if (!out) return strdup(""); }
-            out[o++] = '\\'; out[o++] = 'n';
-        } else {
-            if (o + 1 >= cap) { cap *= 2; out = realloc(out, cap); if (!out) return strdup(""); }
-            out[o++] = c;
-        }
-    }
-    out[o] = '\0';
-    return out;
-}
-
-static char *json_get_str(const char *json, const char *key) {
-    if (!json || !key) return NULL;
-    char needle[128];
-    snprintf(needle, sizeof(needle), "\"%s\"", key);
-    char *pos = strstr(json, needle);
-    if (!pos) return NULL;
-    char *colon = strchr(pos, ':');
-    if (!colon) return NULL;
-    char *firstq = strchr(colon, '\"');
-    if (!firstq) return NULL;
-    char *secondq = strchr(firstq + 1, '\"');
-    if (!secondq) return NULL;
-    size_t n = (size_t)(secondq - (firstq + 1));
-    char *out = malloc(n + 1);
-    if (!out) return NULL;
-    memcpy(out, firstq + 1, n);
-    out[n] = '\0';
-    return out;
-}
-
 
 void node_agent_run_loop(int sock, const char *node_name) {
     if (sock < 0) {
@@ -258,7 +164,7 @@ void node_agent_run_loop(int sock, const char *node_name) {
             break;
         }
 
-        char *type = json_get_str(msg, "type");
+        char *type = json_get_string(msg, "type");
         if (!type) {
             log_error("Malformed message (no type): %s", msg);
             free(msg);
@@ -266,8 +172,8 @@ void node_agent_run_loop(int sock, const char *node_name) {
         }
 
         if (strcmp(type, "exec") == 0) {
-            char *id = json_get_str(msg, "id");
-            char *cmd = json_get_str(msg, "cmd");
+            char *id = json_get_string(msg, "id");
+            char *cmd = json_get_string(msg, "cmd");
             if (!id || !cmd) {
                 log_error("exec missing id or cmd");
                 free(id); free(cmd); free(type); free(msg);
@@ -279,8 +185,8 @@ void node_agent_run_loop(int sock, const char *node_name) {
             char *stdout_out = execute_system_command_fork(cmd, &exitcode, &stderr_out);
             if (!stdout_out) stdout_out = strdup("");
 
-            char *esc_out = escape_json_string(stdout_out);
-            char *esc_err = escape_json_string(stderr_out ? stderr_out : "");
+            char *esc_out = json_escape(stdout_out);
+            char *esc_err = json_escape(stderr_out ? stderr_out : "");
 
             size_t resp_cap = strlen(esc_out) + strlen(esc_err) + strlen(id) + 256;
             char *resp = malloc(resp_cap);
@@ -303,6 +209,31 @@ void node_agent_run_loop(int sock, const char *node_name) {
             free(type);
             free(msg);
             continue;
+        } else if (strcmp(type, "status") == 0) {
+            struct utsname info; char hostname[256] = "unknown";
+            uname(&info); gethostname(hostname, sizeof(hostname) - 1);
+            long cpus = 1, memory_mb = 0;
+#ifdef __APPLE__
+            int cpu_value = 1; uint64_t memory_value = 0;
+            size_t cpu_size = sizeof(cpu_value), memory_size = sizeof(memory_value);
+            if (sysctlbyname("hw.logicalcpu", &cpu_value, &cpu_size, NULL, 0) == 0) cpus = cpu_value;
+            if (sysctlbyname("hw.memsize", &memory_value, &memory_size, NULL, 0) == 0) memory_mb = (long)(memory_value / 1024 / 1024);
+#else
+#ifdef _SC_NPROCESSORS_ONLN
+            cpus = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+#if defined(_SC_PHYS_PAGES) && defined(_SC_PAGESIZE)
+            long pages = sysconf(_SC_PHYS_PAGES), page_size = sysconf(_SC_PAGESIZE);
+            memory_mb = pages > 0 && page_size > 0 ? (pages / 1024) * (page_size / 1024) : 0;
+#endif
+#endif
+            char response[1024];
+            struct timespec uptime = {0}; clock_gettime(CLOCK_MONOTONIC, &uptime);
+            snprintf(response, sizeof(response),
+                "{\"type\":\"status\",\"hostname\":\"%s\",\"kernel\":\"%s %s\",\"cpus\":%ld,\"memory_mb\":%ld,\"uptime_s\":%ld}\n",
+                hostname, info.sysname, info.release, cpus, memory_mb, (long)uptime.tv_sec);
+            ipc_send_full(sock, response, strlen(response));
+            free(type); free(msg); continue;
         } else if (strcmp(type, "ping") == 0) {
             const char *pong = "{\"type\":\"pong\"}\n";
             ipc_send_full(sock, pong, strlen(pong));

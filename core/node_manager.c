@@ -2,6 +2,8 @@
 #include "../include/logging.h"
 #include "../include/node_manager.h"
 #include "../include/ipc.h"
+#include "../include/json.h"
+#include "../include/db.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -172,6 +174,12 @@ void node_sessions_cleanup(void) {
 // Only extracts name, address, os. Returns 0 on success, -1 on error.
 int parse_hello_message(const char *msg, Node *out_node) {
     if (!msg || !out_node) return -1;
+    char *message_type = json_get_string(msg, "type");
+    if (!message_type || strcmp(message_type, "hello") != 0) {
+        free(message_type);
+        return -1;
+    }
+    free(message_type);
     const char *p = msg;
     // naive parse: look for "name":"...","address":"...","os":"..."
     // extract name
@@ -230,66 +238,6 @@ int parse_hello_message(const char *msg, Node *out_node) {
     return 0;
 }
 
-static char *json_get_str(const char *json, const char *key) {
-    if (!json || !key) return NULL;
-    char needle[128];
-    snprintf(needle, sizeof(needle), "\"%s\"", key);
-    const char *pos = strstr(json, needle);
-    if (!pos) return NULL;
-    const char *colon = strchr(pos, ':');
-    if (!colon) return NULL;
-    const char *firstq = strchr(colon, '\"');
-    if (!firstq) return NULL;
-    const char *secondq = strchr(firstq + 1, '\"');
-    if (!secondq) return NULL;
-    size_t len = (size_t)(secondq - (firstq + 1));
-    char *out = malloc(len + 1);
-    if (!out) return NULL;
-    memcpy(out, firstq + 1, len);
-    out[len] = '\0';
-    return out;
-}
-
-static int json_get_int(const char *json, const char *key, int default_value) {
-    if (!json || !key) return default_value;
-    char needle[128];
-    snprintf(needle, sizeof(needle), "\"%s\"", key);
-    const char *pos = strstr(json, needle);
-    if (!pos) return default_value;
-    const char *colon = strchr(pos, ':');
-    if (!colon) return default_value;
-    char *endptr = NULL;
-    errno = 0;
-    long value = strtol(colon + 1, &endptr, 10);
-    if (endptr == colon + 1 || errno == ERANGE) return default_value;
-    return (int)value;
-}
-
-static char *json_unescape(const char *input) {
-    if (!input) return strdup("");
-    size_t len = strlen(input);
-    char *out = malloc(len + 1);
-    if (!out) return strdup("");
-    size_t o = 0;
-    for (size_t i = 0; i < len; ++i) {
-        if (input[i] == '\\' && i + 1 < len) {
-            char next = input[++i];
-            switch (next) {
-                case 'n': out[o++] = '\n'; break;
-                case 'r': out[o++] = '\r'; break;
-                case 't': out[o++] = '\t'; break;
-                case '\\': out[o++] = '\\'; break;
-                case '"': out[o++] = '"'; break;
-                default: out[o++] = next; break;
-            }
-        } else {
-            out[o++] = input[i];
-        }
-    }
-    out[o] = '\0';
-    return out;
-}
-
 void handle_node_message(int fd, const char *msg, GlobalState *state) {
     (void)state;
     if (!msg) return;
@@ -302,7 +250,7 @@ void handle_node_message(int fd, const char *msg, GlobalState *state) {
 
     node_session_touch(session);
 
-    char *type = json_get_str(msg, "type");
+    char *type = json_get_string(msg, "type");
     if (!type) {
         log_error("Malformed message from %s: %s", session->meta.name, msg);
         return;
@@ -311,13 +259,13 @@ void handle_node_message(int fd, const char *msg, GlobalState *state) {
     if (strcmp(type, "pong") == 0) {
         log_info("Received pong from %s", session->meta.name);
     } else if (strcmp(type, "result") == 0) {
-        char *id = json_get_str(msg, "id");
-        char *stdout_raw = json_get_str(msg, "stdout");
-        char *stderr_raw = json_get_str(msg, "stderr");
-        int exit_code = json_get_int(msg, "exit", -1);
+        char *id = json_get_string(msg, "id");
+        char *stdout_raw = json_get_string(msg, "stdout");
+        char *stderr_raw = json_get_string(msg, "stderr");
+        int exit_code = json_get_integer(msg, "exit", -1);
 
-        char *stdout_unesc = json_unescape(stdout_raw);
-        char *stderr_unesc = json_unescape(stderr_raw);
+        char *stdout_unesc = strdup(stdout_raw ? stdout_raw : "");
+        char *stderr_unesc = strdup(stderr_raw ? stderr_raw : "");
 
         printf("\n[%s] command result (id=%s, exit=%d)\n",
                session->meta.name,
@@ -336,12 +284,24 @@ void handle_node_message(int fd, const char *msg, GlobalState *state) {
         fflush(stdout);
 
         log_info("Command result from %s (id=%s, exit=%d)", session->meta.name, id ? id : "unknown", exit_code);
+        char journal[256]; snprintf(journal, sizeof(journal), "process=%s exit=%d", id ? id : "unknown", exit_code);
+        db_store_event(session->meta.name, "result", journal);
 
         free(id);
         free(stdout_raw);
         free(stderr_raw);
         free(stdout_unesc);
         free(stderr_unesc);
+    } else if (strcmp(type, "status") == 0) {
+        char *hostname = json_get_string(msg, "hostname");
+        char *kernel = json_get_string(msg, "kernel");
+        int cpus = json_get_integer(msg, "cpus", 0);
+        int memory = json_get_integer(msg, "memory_mb", 0);
+        int uptime = json_get_integer(msg, "uptime_s", 0);
+        printf("\n[%s] node status\n  host: %s\n  kernel: %s\n  CPUs: %d\n  memory: %d MiB\n  uptime: %ds\n",
+               session->meta.name, hostname ? hostname : "unknown", kernel ? kernel : "unknown", cpus, memory, uptime);
+        fflush(stdout); db_store_event(session->meta.name, "status", "snapshot received");
+        free(hostname); free(kernel);
     } else {
         log_info("Unhandled message type '%s' from %s: %s", type, session->meta.name, msg);
     }

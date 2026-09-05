@@ -4,5 +4,6 @@
 #include "env.h"  
 
 void run_event_loop(GlobalState *state);
+void request_event_loop_stop(void);
 
-#endif 
+#endif
